@@ -1,45 +1,22 @@
-locals {
+# modules/canary/main.tf
 
-  rendered_file_content = templatefile("${path.module}/canary.js.tpl", {
-    name            = var.name,
-    take_screenshot = var.take_screenshot,
-    api_hostname    = var.api_hostname,
-    api_path        = var.api_path,
-    region          = data.aws_region.current.name
-  })
-  zip = "lambda_canary-${sha256(local.rendered_file_content)}.zip"
-  // to make sure the canary is redeployed whenever the rendered templated file is modified.
-
-}
-data "archive_file" "lambda_canary_zip" {
+data "archive_file" "canary_zip" {
   type        = "zip"
-  output_path = local.zip
-  source {
-    content  = local.rendered_file_content
-    filename = "nodejs/node_modules/canary.js"
-  }
+  source_dir = "${path.module}/src" 
+  output_path = "${path.module}/canary_package.zip"
 }
 
-resource "aws_synthetics_canary" "canary_api_calls" {
+resource "aws_synthetics_canary" "canary" {
   name                 = var.name
-  artifact_s3_location = "s3://${data.aws_s3_bucket.s3_canaries-reports.id}/"
-  execution_role_arn   = data.aws_iam_role.role.arn
-  runtime_version      = var.runtime_version
+  artifact_s3_location = "s3://${var.reports_bucket}/"
+  execution_role_arn   = var.role_arn
   handler              = "canary.handler"
-  zip_file             = local.zip
+  zip_file             = data.archive_file.canary_zip.output_path
+  runtime_version      = var.runtime_version
   start_canary         = true
 
-  success_retention_period = 2
-  failure_retention_period = 14
-
   schedule {
-    expression          = "rate(${var.frequency} minutes)"
-    duration_in_seconds = 0
-  }
-
-  run_config {
-    timeout_in_seconds = 15
-    active_tracing     = false
+    expression = "rate(${var.frequency} minutes)"
   }
 
   vpc_config {
@@ -47,29 +24,17 @@ resource "aws_synthetics_canary" "canary_api_calls" {
     security_group_ids = [var.security_group_id]
   }
 
-  tags = {
-    Name = "canary"
+  run_config {
+    timeout_in_seconds = 60
+    memory_in_mb       = 960
+    active_tracing     = true
+    
+    
+    environment_variables = {
+      API_HOSTNAME = var.api_hostname
+      API_PATH     = var.api_path
+    }
   }
-
-  depends_on = [
-    data.archive_file.lambda_canary_zip,
-  ]
-
-}
-
-resource "aws_cloudwatch_metric_alarm" "canary_alarm" {
-  alarm_name          = "canary-${var.name}"
-  comparison_operator = "LessThanThreshold"
-  period              = "300" // 5 minutes (should be calculated from the frequency of the canary)
-  evaluation_periods  = "1"
-  metric_name         = "SuccessPercent"
-  namespace           = "CloudWatchSynthetics"
-  statistic           = "Sum"
-  datapoints_to_alarm = "1"
-  threshold           = "90"
-  alarm_actions       = [var.alert_sns_topic]
-  alarm_description   = "Canary - ${var.name}"
-  dimensions          = {
-    CanaryName = var.name
-  }
+  
+  depends_on = [data.archive_file.canary_zip]
 }

@@ -1,305 +1,142 @@
-resource "aws_kms_key" "canaries_reports_bucket_encryption_key" {
-  enable_key_rotation = true
+# modules/canary-infra/main.tf
+
+
+resource "aws_s3_bucket" "canary_artifacts" {
+  bucket_prefix = "canary-artifacts-"
+  force_destroy = true 
 }
 
-resource "aws_s3_bucket" "canaries_reports_bucket" {
-  bucket = "canaries-reports-bucket-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
-  #checkov:skip=CKV_AWS_18:The bucket does not require access logging
-  #checkov:skip=CKV_AWS_144:The bucket does not require cross-region replication
-  tags = {
-    Name = "canary"
+resource "aws_s3_bucket_ownership_controls" "s3_ownership" {
+  bucket = aws_s3_bucket.canary_artifacts.id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "canaries_reports_bucket_encryption_configuration" {
-  bucket = aws_s3_bucket.canaries_reports_bucket.bucket
-
+resource "aws_s3_bucket_server_side_encryption_configuration" "encrypt" {
+  bucket = aws_s3_bucket.canary_artifacts.id
   rule {
     apply_server_side_encryption_by_default {
-      kms_master_key_id = aws_kms_key.canaries_reports_bucket_encryption_key.arn
-      sse_algorithm = "aws:kms"
+      sse_algorithm = "AES256"
     }
   }
 }
 
-resource "aws_s3_bucket_versioning" "canaries_reports_bucket_versioning" {
-  bucket = aws_s3_bucket.canaries_reports_bucket.bucket
-  versioning_configuration {
-    status = "Enabled"
+# 2. Shared Security Group
+# This allows all canaries to talk to the VPC Endpoints and your Internal API.
+
+resource "aws_security_group" "canary_sg" {
+  name        = "canary-shared-sg"
+  description = "Security group for Synthetics Canaries"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description = "Allow outbound to VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "Allow HTTPS from self"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    self        = true
+  }
+  ingress{
+    description = "Allow HTTP from self"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    self        = true
+  }
+    ingress{
+    description = "Allow from self"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    self        = true
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "canaries_reports_bucket_lifecycle_configuration" {
-  bucket = aws_s3_bucket.canaries_reports_bucket.bucket
-  rule {
-    id = "config"
+# 3. VPC Endpoints 
+# Creates a path for Canaries to reach S3 and CloudWatch without Internet.
 
-    noncurrent_version_expiration {
-      noncurrent_days = 30
-    }
-
-    status = "Enabled"
-  }
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = var.vpc_id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [data.aws_route_table.selected.id]
 }
 
-resource "aws_s3_bucket_acl" "canaries_reports_bucket_acl" {
-  bucket = aws_s3_bucket.canaries_reports_bucket.bucket
-  acl    = "private"
+resource "aws_vpc_endpoint" "monitoring" {
+  vpc_id              = var.vpc_id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.monitoring"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = var.subnet_ids
+  security_group_ids  = [aws_security_group.canary_sg.id]
+  private_dns_enabled = true
 }
 
-resource "aws_s3_bucket_public_access_block" "canaries_reports_bucket_block_public_access" {
-  bucket                  = aws_s3_bucket.canaries_reports_bucket.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
+resource "aws_vpc_endpoint" "logs" {
+  vpc_id              = var.vpc_id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.logs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = var.subnet_ids
+  security_group_ids  = [aws_security_group.canary_sg.id]
+  private_dns_enabled = true
 }
 
-resource "aws_s3_bucket_policy" "canaries_reports_bucket-policy" {
-  bucket = aws_s3_bucket.canaries_reports_bucket.id
+# 4. Shared IAM Role
+resource "aws_iam_role" "canary_role" {
+  name = "canary-execution-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "canary_policy" {
+  name = "canary-policy"
+  role = aws_iam_role.canary_role.id
+
   policy = jsonencode({
-    Version   = "2012-10-17"
-    Id        = "CanariesReportsBucketPolicy"
+    Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "Permissions"
-        Effect    = "Allow"
-        Principal = {
-          AWS = data.aws_caller_identity.current.account_id
-        }
-        Action   = ["s3:*"]
-        Resource = ["${aws_s3_bucket.canaries_reports_bucket.arn}/*"]
+        Sid      = "S3Access"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:GetBucketLocation"]
+        Resource = [aws_s3_bucket.canary_artifacts.arn, "${aws_s3_bucket.canary_artifacts.arn}/*"]
       },
       {
-        "Sid": "AllowSSLRequestsOnly",
-        "Action": "s3:*",
-        "Effect": "Deny",
-        "Resource": [
-          aws_s3_bucket.canaries_reports_bucket.arn,
-          "${aws_s3_bucket.canaries_reports_bucket.arn}/*"
-        ],
-        "Condition": {
-          "Bool": {
-            "aws:SecureTransport": "false"
-          }
-        },
-        "Principal": "*"
+        Sid      = "CloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = { StringEquals = { "cloudwatch:namespace" : "CloudWatchSynthetics" } }
+      },
+      {
+        Sid      = "Logs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:log-group:/aws/lambda/cwsyn-*"
+      },
+      {
+        Sid      = "VPCAccess"
+        Effect   = "Allow"
+        Action   = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "*"
       }
     ]
   })
 }
-
-data "aws_iam_policy_document" "canary-assume-role-policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    effect  = "Allow"
-
-    principals {
-      identifiers = ["lambda.amazonaws.com"]
-      type        = "Service"
-    }
-  }
-}
-
-resource "aws_iam_role" "canary-role" {
-  name               = "canary-role"
-  assume_role_policy = data.aws_iam_policy_document.canary-assume-role-policy.json
-  description        = "IAM role for AWS Synthetic Monitoring Canaries"
-
-  tags = {
-    Name = "canary"
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "AWSLambdaVPCAccessExecutionRole" {
-  role       = aws_iam_role.canary-role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
-data "aws_iam_policy_document" "canary-policy" {
-  statement {
-    sid     = "CanaryS3Permission1"
-    effect  = "Allow"
-    actions = [
-      "s3:PutObject",
-      "s3:GetBucketLocation",
-      "s3:ListAllMyBuckets"
-    ]
-    resources = [
-      aws_s3_bucket.canaries_reports_bucket.arn,
-      "${aws_s3_bucket.canaries_reports_bucket.arn}/*"
-    ]
-  }
-
-  statement {
-    sid     = "CanaryS3Permission2"
-    effect  = "Allow"
-    actions = [
-      "s3:ListAllMyBuckets"
-    ]
-    resources = [
-      "arn:aws:s3:::*"
-    ]
-  }
-
-  statement {
-    sid     = "CanaryCloudWatchLogs"
-    effect  = "Allow"
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:CreateLogStream",
-      "logs:PutLogEvents"
-    ]
-    resources = [
-      "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/*"
-    ]
-  }
-
-  statement {
-    sid     = "CanaryCloudWatchAlarm"
-    effect  = "Allow"
-    actions = [
-      "cloudwatch:PutMetricData"
-    ]
-    resources = [
-      "*"
-    ]
-    condition {
-      test     = "StringEquals"
-      values   = ["CloudWatchSynthetics"]
-      variable = "cloudwatch:namespace"
-    }
-  }
-
-  statement {
-    sid     = "CanaryinVPC"
-    effect  = "Allow"
-    actions = [
-      "ec2:DescribeNetworkInterfaces",
-      "ec2:CreateNetworkInterface",
-      "ec2:DeleteNetworkInterface",
-      "ec2:DescribeInstances",
-      "ec2:AttachNetworkInterface"
-    ]
-    resources = [
-      "arn:aws:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"
-    ]
-  }
-}
-
-resource "aws_iam_policy" "canary-policy" {
-  name        = "canary-policy"
-  policy      = data.aws_iam_policy_document.canary-policy.json
-  description = "IAM role for AWS Synthetic Monitoring Canaries"
-
-  tags = {
-    Name = "canary"
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "canary-policy-attachment" {
-  role       = aws_iam_role.canary-role.name
-  policy_arn = aws_iam_policy.canary-policy.arn
-}
-
-resource "aws_security_group" "canary_sg" {
-  name        = "canary_sg"
-  description = "Allow canaries to call the services they need to call"
-  vpc_id      = var.vpc_id
-
-  #checkov:skip=CKV2_AWS_5:Security group is correctly attached using output variable
-  egress = [
-    {
-      description      = "Allow calls from canary to DNS"
-      from_port        = 53
-      to_port          = 53
-      protocol         = "TCP"
-      cidr_blocks      = ["0.0.0.0/0"]
-      ipv6_cidr_blocks = []
-      prefix_list_ids  = []
-      security_groups  = []
-      self             = false
-    },
-    {
-      description      = "Allow calls from canary to HTTPS"
-      from_port        = 443
-      to_port          = 443
-      protocol         = "TCP"
-      cidr_blocks      = ["0.0.0.0/0"]
-      ipv6_cidr_blocks = []
-      prefix_list_ids  = []
-      security_groups  = []
-      self             = false
-    },
-    {
-      description      = "Allow calls from canary to HTTP"
-      from_port        = 80
-      to_port          = 80
-      protocol         = "TCP"
-      cidr_blocks      = ["0.0.0.0/0"]
-      ipv6_cidr_blocks = []
-      prefix_list_ids  = []
-      security_groups  = []
-      self             = false
-    },
-  ]
-
-  tags = {
-    Name = "canary"
-  }
-}
-
-resource "aws_security_group" "canary_endpoints_sg" {
-  name        = "canary_endpoints_sg"
-  description = "Security group attached to interface endpoints"
-  vpc_id      = var.vpc_id
-
-  ingress = [
-    {
-      description      = "Allow calls from canary to HTTPS"
-      from_port        = 443
-      to_port          = 443
-      protocol         = "TCP"
-      cidr_blocks      = []
-      ipv6_cidr_blocks = []
-      prefix_list_ids  = []
-      security_groups  = [aws_security_group.canary_sg.id]
-      self             = false
-    }
-  ]
-
-  tags = {
-    Name = "canary"
-  }
-}
-
-
-resource "aws_vpc_endpoint" "canary_monitoring_endpoint" {
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.monitoring"
-  vpc_id            = var.vpc_id
-  vpc_endpoint_type = "Interface"
-  private_dns_enabled = true
-
-  security_group_ids = [aws_security_group.canary_endpoints_sg.id]
-  subnet_ids         = var.subnet_ids
-
-  tags = {
-    Name = "canary"
-  }
-}
-
-resource "aws_vpc_endpoint" "canary_synthetics_endpoint" {
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.synthetics"
-  vpc_id              = var.vpc_id
-  vpc_endpoint_type   = "Interface"
-  private_dns_enabled = true
-
-  security_group_ids = [aws_security_group.canary_endpoints_sg.id]
-  subnet_ids         = var.subnet_ids
-
-
-  tags = {
-    Name = "canary"
-  }
-}
-

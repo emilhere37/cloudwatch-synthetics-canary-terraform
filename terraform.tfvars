@@ -1,9 +1,16 @@
-name   = "my-canary"
-runtime_version = "syn-nodejs-puppeteer-3.7"
-take_screenshot = false
-api_hostname = "mydomain.internal"
-api_path = "/path?param=value"
-vpc_id = "vpc_id"
-subnet_ids = ["subnet_id1"]
-frequency = 5
-alert_sns_topic = "arn:aws:sns:eu-central-1:111111111111:yyyyy"
+# terraform.tfvars
+
+# Network Details (You MUST replace these with real IDs from your AWS Console)
+vpc_id          = "vpc-1"
+subnet_ids      = ["subnet-1", "subnet-2"]
+
+# Target Details
+api_hostname    = "" # Replace with your internal endpoint
+api_path        = "/"
+
+name            = "canary-test"
+runtime_version = "syn-nodejs-puppeteer-13.1" 
+frequency       = 5 # Run every 5 minutes
+
+# SNS Topic (Optional - leave blank if you didn't configure the alarm)
+alert_sns_topic = ""
