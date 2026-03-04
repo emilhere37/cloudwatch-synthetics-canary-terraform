@@ -1,5 +1,5 @@
-# modules/canary-infra/main.tf
-
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 resource "aws_s3_bucket" "canary_artifacts" {
   bucket_prefix = "canary-artifacts-"
@@ -24,7 +24,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "encrypt" {
 
 # 2. Shared Security Group
 # This allows all canaries to talk to the VPC Endpoints and your Internal API.
-
 resource "aws_security_group" "canary_sg" {
   name        = "canary-shared-sg"
   description = "Security group for Synthetics Canaries"

@@ -1,5 +1,7 @@
-# main.tf (Root)
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 
+# main.tf
 provider "aws" {
   region = var.aws_region
 }
@@ -23,8 +25,8 @@ module "canary" {
   api_path        = var.api_path
   take_screenshot = var.take_screenshot
   alert_sns_topic = var.alert_sns_topic
-  
-  reports_bucket    = module.canary_infra.reports_bucket 
+
+  reports_bucket    = module.canary_infra.reports_bucket
   role_arn          = module.canary_infra.role_arn
   security_group_id = module.canary_infra.security_group
   subnet_ids        = var.subnet_ids

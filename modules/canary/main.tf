@@ -1,4 +1,5 @@
-# modules/canary/main.tf
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 data "archive_file" "canary_zip" {
   type        = "zip"
@@ -26,8 +27,6 @@ resource "aws_synthetics_canary" "canary" {
 
   run_config {
     timeout_in_seconds = 60
-    memory_in_mb       = 960
-    active_tracing     = true
     
     
     environment_variables = {

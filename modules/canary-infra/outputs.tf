@@ -1,4 +1,5 @@
-#modules/canary-infra/outputs.tf
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 output "reports_bucket" {
     description = "The name of the S3 bucket for canary artifacts"

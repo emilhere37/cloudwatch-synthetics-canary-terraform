@@ -1,4 +1,5 @@
-#modules/canary-infra/variable.tf
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 variable "vpc_id" {
   type = string
